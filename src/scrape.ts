@@ -2,18 +2,9 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { chromium } from "playwright";
-import nodemailer from "nodemailer";
+import sgMail from "@sendgrid/mail";
 
-// Set up nodemailer transporter for Gmail SMTP
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS,
-  },
-});
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
 (async () => {
   const browser = await chromium.launch();
@@ -104,8 +95,8 @@ const transporter = nodemailer.createTransport({
 
       // Send email only if new results were found
       try {
-        await transporter.sendMail({
-          from: process.env.GMAIL_USER,
+        await sgMail.send({
+          from: process.env.SENDGRID_FROM || "brocklchelle@gmail.com",
           to: "brocklchelle@gmail.com",
           subject: "Kananaskis Tee Times",
           text: emailBody,
