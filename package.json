@@ -1,0 +1,24 @@
+{
+  "name": "kananaskis-tee-time-scraper",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^24.0.7",
+    "@types/nodemailer": "^6.4.17",
+    "playwright": "^1.53.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "dotenv": "^17.0.0",
+    "nodemailer": "^7.0.4"
+  }
+}
