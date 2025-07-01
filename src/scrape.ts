@@ -7,6 +7,8 @@ import nodemailer from "nodemailer";
 // Set up nodemailer transporter for Gmail SMTP
 const transporter = nodemailer.createTransport({
   service: "gmail",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_PASS,
@@ -95,7 +97,7 @@ const transporter = nodemailer.createTransport({
       console.log(emailBody);
     } else if (newResults.length > 0) {
       emailBody =
-        "Hi Brock, we have found the following tee times for you on July 12th, 2025:\n" +
+        "We have found the following tee times for you on July 12th, 2025:\n" +
         newResults.map((r) => `Time: ${r}`).join("\n");
       console.log("New tee times:");
       newResults.forEach((r) => console.log(`Time: ${r}`));
@@ -103,7 +105,7 @@ const transporter = nodemailer.createTransport({
       // Send email only if new results were found
       try {
         await transporter.sendMail({
-          from: process.env.GMAIL_USER || "your_gmail@gmail.com",
+          from: process.env.GMAIL_USER,
           to: "brocklchelle@gmail.com",
           subject: "Kananaskis Tee Times",
           text: emailBody,
