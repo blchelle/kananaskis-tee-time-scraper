@@ -14,7 +14,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
   const page = await context.newPage();
 
   // Construct the search URL
-  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=23`;
+  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=16`;
   await page.goto(url);
 
   // Step 1: Ensure the calendar is set to July 2025
@@ -39,7 +39,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
     ".mat-button-toggle-group .mat-button-toggle-button"
   );
   // Initial click on the 3rd button (4 players)
-  // await toggleButtons[2].click();
+  await toggleButtons[2].click();
 
   await page.waitForTimeout(500);
   // Neverending polling loop, no need to toggle buttons for refresh
