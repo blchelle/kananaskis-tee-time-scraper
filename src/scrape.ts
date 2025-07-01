@@ -14,7 +14,7 @@ const transporter = nodemailer.createTransport({
 });
 
 (async () => {
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch();
   const context = await browser.newContext({
     viewport: { width: 1300, height: 900 },
   });
