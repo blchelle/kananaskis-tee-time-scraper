@@ -14,7 +14,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
   const page = await context.newPage();
 
   // Construct the search URL
-  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=16`;
+  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=17`;
   await page.goto(url);
 
   // Step 1: Ensure the calendar is set to July 2025
@@ -30,8 +30,22 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
     tries++;
   }
 
-  // Step 2: Click the 14th day of the month
-  await page.click("div.day-unit:nth-child(14)");
+  // Define configs for both July 11th and July 12th
+  const daysToQuery = [
+    {
+      date: "July 11th, 2025",
+      selector: "div.day-unit:nth-child(13)",
+      lastResults: [] as string[],
+    },
+    {
+      date: "July 12th, 2025",
+      selector: "div.day-unit:nth-child(14)",
+      lastResults: [] as string[],
+    },
+  ];
+
+  // Initial click to set to July 12th (default)
+  await page.click(daysToQuery[1].selector);
   await page.waitForTimeout(500);
 
   // Step 3: Click the 18 holes toggle and start polling loop
@@ -42,58 +56,72 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
   await toggleButtons[2].click();
 
   await page.waitForTimeout(500);
-  // Neverending polling loop, no need to toggle buttons for refresh
-  let lastResults: string[] = [];
+  // Neverending polling loop, iterate over dayConfigs
   while (true) {
-    // 1. Attempt to read results
-    try {
-      await page.waitForSelector(".mat-card-content", { timeout: 10000 });
-    } catch {
-      // No results found, continue
-    }
-    const results = await page.$$eval(".mat-card-content", (cards) => {
-      return cards.map((card) => {
-        const timeElem = card.querySelector(
-          ".teetimetableDateTime.time-teetime-table"
-        ) as HTMLElement;
-        const courseElem = card.querySelector(
-          ".teetimecourseshort.ng-star-inserted"
-        ) as HTMLElement;
-        // Clean up whitespace and join lines for time and course
-        const time = timeElem
-          ? timeElem.innerText.replace(/\s+/g, " ").trim()
-          : "";
-        const course = courseElem
-          ? courseElem.innerText.replace(/\s+/g, " ").trim()
-          : "";
-        return { time, course };
-      });
-    });
-    // Deduplicate by both time and course
-    const uniqueResultsSet = new Set<string>();
-    const uniqueResults = results.filter(({ time, course }) => {
-      const key = `${time} | ${course}`;
-      if (uniqueResultsSet.has(key)) return false;
-      uniqueResultsSet.add(key);
-      return true;
-    });
-    const currentResults = uniqueResults.map(
-      ({ time, course }) => `${time} | ${course}`
-    );
     let emailBody = "";
-    // Only send email if there is a new result
-    const newResults = currentResults.filter((r) => !lastResults.includes(r));
-    if (results.length === 0) {
-      emailBody = "No tee times found for the specified criteria.";
-      console.log(emailBody);
-    } else if (newResults.length > 0) {
-      emailBody =
-        "We have found the following tee times for you on July 12th, 2025:\n" +
-        newResults.map((r) => `Time: ${r}`).join("\n");
-      console.log("New tee times:");
-      newResults.forEach((r) => console.log(`Time: ${r}`));
+    let shouldSendEmail = false;
+    for (const config of daysToQuery) {
+      // Click the correct day
+      await page.click(config.selector);
+      await page.waitForTimeout(500);
+      // 1. Attempt to read results
+      try {
+        await page.waitForSelector(".mat-card-content", { timeout: 10000 });
+      } catch {
+        // No results found, continue
+      }
+      const results = await page.$$eval(".mat-card-content", (cards) => {
+        return cards.map((card) => {
+          const timeElem = card.querySelector(
+            ".teetimetableDateTime.time-teetime-table"
+          ) as HTMLElement;
+          const courseElem = card.querySelector(
+            ".teetimecourseshort.ng-star-inserted"
+          ) as HTMLElement;
+          // Clean up whitespace and join lines for time and course
+          const time = timeElem
+            ? timeElem.innerText.replace(/\s+/g, " ").trim()
+            : "";
+          const course = courseElem
+            ? courseElem.innerText.replace(/\s+/g, " ").trim()
+            : "";
+          return { time, course };
+        });
+      });
+      // Deduplicate by both time and course
+      const uniqueResultsSet = new Set<string>();
+      const uniqueResults = results.filter(({ time, course }) => {
+        const key = `${time} | ${course}`;
+        if (uniqueResultsSet.has(key)) return false;
+        uniqueResultsSet.add(key);
+        return true;
+      });
+      const currentResults = uniqueResults.map(
+        ({ time, course }) => `${time} | ${course}`
+      );
+      // Only send email if there is a new result
+      const newResults = currentResults.filter(
+        (r) => !config.lastResults.includes(r)
+      );
+      if (results.length === 0) {
+        emailBody += `No tee times found for the specified criteria on ${config.date}.\n`;
+      } else if (newResults.length > 0) {
+        emailBody +=
+          `We have found the following tee times for you on ${config.date}:\n` +
+          newResults.map((r) => `Time: ${r}`).join("\n") +
+          "\n";
+        shouldSendEmail = true;
+        console.log("New tee times for " + config.date);
+        newResults.forEach((r) => console.log(`Time: ${r}`));
+      } else {
+        emailBody += `No new tee times since last check for ${config.date}.\n`;
+      }
+      // Update lastResults for next iteration only (not saved to file)
+      config.lastResults = currentResults;
+    }
 
-      // Send email only if new results were found
+    // After checking both days, send email if any new results were found
+    if (shouldSendEmail) {
       try {
         await sgMail.send({
           from: process.env.SENDGRID_FROM || "brocklchelle@gmail.com",
@@ -105,13 +133,10 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
       } catch (err) {
         console.error("Failed to send email:", err);
       }
-      // Update lastResults for next iteration only (not saved to file)
-      lastResults = currentResults;
     } else {
-      console.log("No new tee times since last check.");
-      lastResults = currentResults;
+      console.log("No new tee times since last check for either day.");
     }
-    // 3. Wait 30 seconds, then restart
+    // Wait 30 seconds before next polling cycle
     await page.waitForTimeout(30000);
   }
 })();
