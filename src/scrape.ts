@@ -6,6 +6,15 @@ import sgMail from "@sendgrid/mail";
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
+// Helper to get MST timestamp
+function getMSTTimestamp() {
+  const now = new Date();
+  // MST is UTC-7, no DST
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const mst = new Date(utc - 6 * 60 * 60000);
+  return mst.toISOString().replace("T", " ").substring(0, 19) + " MST";
+}
+
 (async () => {
   const browser = await chromium.launch();
   const context = await browser.newContext({
@@ -104,16 +113,28 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
         (r) => !config.lastResults.includes(r)
       );
       if (results.length === 0) {
+        console.log(
+          `[${getMSTTimestamp()}] No tee times found for the specified criteria on ${
+            config.date
+          }.`
+        );
         emailBody += `No tee times found for the specified criteria on ${config.date}.\n`;
       } else if (newResults.length > 0) {
+        console.log(`[${getMSTTimestamp()}] New tee times for ${config.date}`);
+        newResults.forEach((r) =>
+          console.log(`[${getMSTTimestamp()}] Time: ${r}`)
+        );
         emailBody +=
           `We have found the following tee times for you on ${config.date}:\n` +
           newResults.map((r) => `Time: ${r}`).join("\n") +
           "\n";
         shouldSendEmail = true;
-        console.log("New tee times for " + config.date);
-        newResults.forEach((r) => console.log(`Time: ${r}`));
       } else {
+        console.log(
+          `[${getMSTTimestamp()}] No new tee times since last check for ${
+            config.date
+          }.`
+        );
         emailBody += `No new tee times since last check for ${config.date}.\n`;
       }
       // Update lastResults for next iteration only (not saved to file)
@@ -129,12 +150,14 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
           subject: "Kananaskis Tee Times",
           text: emailBody,
         });
-        console.log("Email sent!");
+        console.log(`[${getMSTTimestamp()}] Email sent!`);
       } catch (err) {
-        console.error("Failed to send email:", err);
+        console.error(`[${getMSTTimestamp()}] Failed to send email:`, err);
       }
     } else {
-      console.log("No new tee times since last check for either day.");
+      console.log(
+        `[${getMSTTimestamp()}] No new tee times since last check for either day.`
+      );
     }
     // Wait 30 seconds before next polling cycle
     await page.waitForTimeout(30000);
