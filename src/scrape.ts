@@ -1,8 +1,11 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
 import { Resend } from "resend";
+
+chromium.use(stealth());
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
 
@@ -50,7 +53,7 @@ function getMSTTimestamp() {
 
 (async () => {
   const browser = await chromium.launch({
-    headless: process.env.NODE_ENV !== 'development',
+    headless: true, // TODO: change back to process.env.NODE_ENV !== 'development'
     args: [
       '--disable-blink-features=AutomationControlled',
       '--disable-dev-shm-usage',
@@ -63,10 +66,6 @@ function getMSTTimestamp() {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     locale: 'en-US',
     timezoneId: 'America/Denver',
-  });
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
 
   const page = await context.newPage();
@@ -85,6 +84,7 @@ function getMSTTimestamp() {
   let currentYear = 2026;
 
   while (currentYear < targetYear || (currentYear === targetYear && currentMonth < targetMonth)) {
+    console.log(`[${getMSTTimestamp()}] Calendar at ${currentMonth}/${currentYear}, navigating to ${targetMonth}/${targetYear}`);
     // Click next month button (it's the 4th button: [0]=disabled prev, [1]=month selector, [2]=Sign In, [3]=next)
     const buttons = await page.$$('button');
     if (buttons.length > 3) {
@@ -98,24 +98,18 @@ function getMSTTimestamp() {
     }
   }
 
-  // Click the specific day button
-  const allButtons = await page.$$('button');
-  let foundDay = false;
-  for (const btn of allButtons) {
-    const isDisabled = await btn.isDisabled();
+  console.log(`[${getMSTTimestamp()}] Calendar navigation complete, now at ${currentMonth}/${currentYear}`);
+  await page.waitForTimeout(3000);
 
-    // Day number is in parent's text content (button + sibling generic)
-    const parentText = await btn.evaluate(el => el.parentElement?.textContent?.trim());
-
-    if (parentText === targetDay.toString() && !isDisabled) {
-      await btn.click({ force: true });
-      foundDay = true;
-      break;
-    }
-  }
-
-  if (!foundDay) {
-    console.log(`[${getMSTTimestamp()}] ERROR: Could not find day button ${targetDay}`);
+  // Click day in calendar grid
+  try {
+    await page.click(`text="${targetDay}"`, { timeout: 5000 });
+    console.log(`[${getMSTTimestamp()}] Clicked day ${targetDay}`);
+  } catch (err) {
+    console.log(`[${getMSTTimestamp()}] ERROR: Could not click day ${targetDay}`);
+    await page.screenshot({ path: '/tmp/calendar-error.png', fullPage: true });
+    await browser.close();
+    process.exit(1);
   }
 
   await page.waitForTimeout(1000);
@@ -143,23 +137,10 @@ function getMSTTimestamp() {
       // Click the specific day in calendar
       const [month, day, year] = dayConfig.dateValue.split('/').map(Number);
 
-      const dayButtons = await page.$$('button');
-      let foundDay = false;
-      for (const btn of dayButtons) {
-        const isDisabled = await btn.isDisabled();
-
-        // Day number is in parent's text content (button + sibling generic)
-        const parentText = await btn.evaluate(el => el.parentElement?.textContent?.trim());
-
-        if (parentText === day.toString() && !isDisabled) {
-          await btn.click({ force: true });
-          foundDay = true;
-          break;
-        }
-      }
-
-      if (!foundDay) {
-        console.log(`[${getMSTTimestamp()}] WARNING: Could not find day ${day} for ${dayConfig.date}`);
+      try {
+        await page.click(`text="${day}"`, { timeout: 5000 });
+      } catch (err) {
+        console.log(`[${getMSTTimestamp()}] WARNING: Could not click day ${day} for ${dayConfig.date}`);
       }
 
       await page.waitForTimeout(3000);
