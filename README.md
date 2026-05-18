@@ -1,6 +1,6 @@
 # Kananaskis Tee Time Scraper
 
-This project scrapes the Kananaskis golf booking site for available tee times on July 12, 2025, after 8am and before 4pm, for 4 players and 18 holes.
+Scrapes the Kananaskis golf booking site for available tee times.
 
 ## Usage
 
@@ -10,15 +10,24 @@ This project scrapes the Kananaskis golf booking site for available tee times on
    ```
 2. Run the scraper:
    ```sh
-   npx ts-node src/scrape.ts
+   npx ts-node src/scrape.ts --dates <YYYY-MM-DD,YYYY-MM-DD> --start-time <hour> --end-time <hour> --golfers <1-4>
    ```
+
+### Parameters
+
+- `--dates`: Comma-separated dates (YYYY-MM-DD format)
+- `--start-time`: Start hour in 24h format (0-23)
+- `--end-time`: End hour in 24h format (0-23)
+- `--golfers`: Number of golfers (1-4)
+
+### Example
+
+```sh
+npx ts-node src/scrape.ts --dates 2025-07-11,2025-07-12 --start-time 8 --end-time 16 --golfers 4
+```
 
 ## Tech Stack
 
 - Node.js
 - TypeScript
 - Playwright
-
-## Customization
-
-Modify `src/scrape.ts` to change the date, time, number of players, or holes.

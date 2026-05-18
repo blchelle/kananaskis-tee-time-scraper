@@ -2,9 +2,42 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { chromium } from "playwright";
-import sgMail from "@sendgrid/mail";
+import { Resend } from "resend";
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+const resend = new Resend(process.env.RESEND_API_KEY!);
+
+// Parse CLI args
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const params: Record<string, string> = {};
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith("--")) {
+      const key = args[i].slice(2);
+      params[key] = args[++i];
+    }
+  }
+
+  const dates = params["dates"];
+  const startTime = params["start-time"];
+  const endTime = params["end-time"];
+  const golfers = params["golfers"];
+
+  if (!dates || !startTime || !endTime || !golfers) {
+    console.error("Missing required parameters.");
+    console.error("Usage: npx ts-node src/scrape.ts --dates <YYYY-MM-DD,YYYY-MM-DD> --start-time <hour> --end-time <hour> --golfers <1-4>");
+    process.exit(1);
+  }
+
+  return {
+    dates: dates.split(","),
+    startTime: parseInt(startTime),
+    endTime: parseInt(endTime),
+    golfers: parseInt(golfers)
+  };
+}
+
+const config = parseArgs();
 
 // Helper to get MST timestamp
 function getMSTTimestamp() {
@@ -16,88 +49,177 @@ function getMSTTimestamp() {
 }
 
 (async () => {
-  const browser = await chromium.launch();
-  const context = await browser.newContext({
-    viewport: { width: 1300, height: 900 },
+  const browser = await chromium.launch({
+    headless: process.env.NODE_ENV !== 'development',
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+    ]
   });
+
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    locale: 'en-US',
+    timezoneId: 'America/Denver',
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+
   const page = await context.newPage();
 
-  // Construct the search URL
-  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=17`;
+  const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=${config.startTime}&TeeOffTimeMax=${config.endTime}`;
   await page.goto(url);
+  await page.waitForTimeout(5000);
 
-  // Step 1: Ensure the calendar is set to July 2025
-  let topbarText = await page.textContent(".topbar-container .topbar-title");
-  let tries = 0;
-  while (topbarText?.trim() !== "July 2025" && tries < 12) {
-    const nextBtn = (await page.$$(".topbar-container .ng-star-inserted"))[1];
-    if (nextBtn) {
-      await nextBtn.click();
+  // Navigate to first date using calendar
+  const [targetYear, targetMonth, targetDay] = config.dates[0].split('-').map(Number);
+
+  console.log(`[${getMSTTimestamp()}] Navigating to ${targetMonth}/${targetDay}/${targetYear}`);
+
+  // Navigate to correct month
+  let currentMonth = 5; // May (current month from snapshot)
+  let currentYear = 2026;
+
+  while (currentYear < targetYear || (currentYear === targetYear && currentMonth < targetMonth)) {
+    // Click next month button (it's the 4th button: [0]=disabled prev, [1]=month selector, [2]=Sign In, [3]=next)
+    const buttons = await page.$$('button');
+    if (buttons.length > 3) {
+      await buttons[3].click();
     }
-    await page.waitForTimeout(500);
-    topbarText = await page.textContent(".topbar-container .topbar-title");
-    tries++;
+    await page.waitForTimeout(1000);
+    currentMonth++;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear++;
+    }
   }
 
-  // Define configs for both July 11th and July 12th
-  const daysToQuery = [
-    {
-      date: "July 11th, 2025",
-      selector: "div.day-unit:nth-child(13)",
+  // Click the specific day button
+  const allButtons = await page.$$('button');
+  let foundDay = false;
+  for (const btn of allButtons) {
+    const isDisabled = await btn.isDisabled();
+
+    // Day number is in parent's text content (button + sibling generic)
+    const parentText = await btn.evaluate(el => el.parentElement?.textContent?.trim());
+
+    if (parentText === targetDay.toString() && !isDisabled) {
+      await btn.click({ force: true });
+      foundDay = true;
+      break;
+    }
+  }
+
+  if (!foundDay) {
+    console.log(`[${getMSTTimestamp()}] ERROR: Could not find day button ${targetDay}`);
+  }
+
+  await page.waitForTimeout(1000);
+
+  // Select golfers
+  const golfersButtonText = config.golfers === 1 ? "Any" : config.golfers.toString();
+  await page.click(`button:has-text("${golfersButtonText}")`);
+  await page.waitForTimeout(1000);
+
+  const daysToQuery = config.dates.map((dateStr) => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return {
+      date: date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+      dateValue: `${month}/${day}/${year % 100}`,
       lastResults: [] as string[],
-    },
-    {
-      date: "July 12th, 2025",
-      selector: "div.day-unit:nth-child(14)",
-      lastResults: [] as string[],
-    },
-  ];
+    };
+  });
 
-  // Initial click to set to July 12th (default)
-  await page.click(daysToQuery[1].selector);
-  await page.waitForTimeout(500);
-
-  // Step 3: Click the 18 holes toggle and start polling loop
-  const toggleButtons = await page.$$(
-    ".mat-button-toggle-group .mat-button-toggle-button"
-  );
-  // Initial click on the 3rd button (4 players)
-  await toggleButtons[2].click();
-
-  await page.waitForTimeout(500);
-  // Neverending polling loop, iterate over dayConfigs
   while (true) {
     let emailBody = "";
     let shouldSendEmail = false;
-    for (const config of daysToQuery) {
-      // Click the correct day
-      await page.click(config.selector);
-      await page.waitForTimeout(500);
-      // 1. Attempt to read results
-      try {
-        await page.waitForSelector(".mat-card-content", { timeout: 10000 });
-      } catch {
-        // No results found, continue
+
+    for (const dayConfig of daysToQuery) {
+      // Click the specific day in calendar
+      const [month, day, year] = dayConfig.dateValue.split('/').map(Number);
+
+      const dayButtons = await page.$$('button');
+      let foundDay = false;
+      for (const btn of dayButtons) {
+        const isDisabled = await btn.isDisabled();
+
+        // Day number is in parent's text content (button + sibling generic)
+        const parentText = await btn.evaluate(el => el.parentElement?.textContent?.trim());
+
+        if (parentText === day.toString() && !isDisabled) {
+          await btn.click({ force: true });
+          foundDay = true;
+          break;
+        }
       }
-      const results = await page.$$eval(".mat-card-content", (cards) => {
-        return cards.map((card) => {
-          const timeElem = card.querySelector(
-            ".teetimetableDateTime.time-teetime-table"
-          ) as HTMLElement;
-          const courseElem = card.querySelector(
-            ".teetimecourseshort.ng-star-inserted"
-          ) as HTMLElement;
-          // Clean up whitespace and join lines for time and course
-          const time = timeElem
-            ? timeElem.innerText.replace(/\s+/g, " ").trim()
-            : "";
-          const course = courseElem
-            ? courseElem.innerText.replace(/\s+/g, " ").trim()
-            : "";
-          return { time, course };
-        });
+
+      if (!foundDay) {
+        console.log(`[${getMSTTimestamp()}] WARNING: Could not find day ${day} for ${dayConfig.date}`);
+      }
+
+      await page.waitForTimeout(3000);
+
+      // Parse all results
+      const allResults = await page.$$eval("button.btn-teesheet", (buttons) => {
+        return buttons
+          .filter((btn) => {
+            const timer = btn.querySelector("time[role='timer']");
+            const course = btn.querySelector("li");
+            return timer && course;
+          })
+          .map((btn) => {
+            const timer = btn.querySelector("time[role='timer']");
+            const course = btn.querySelector("li");
+            const detailsText = btn.textContent || "";
+
+            // Get time and AM/PM labels
+            const timeText = timer?.textContent?.trim() || "";
+            const labels = Array.from(timer?.parentElement?.querySelectorAll('label') || [])
+              .map(l => l.textContent?.trim())
+              .join('');
+
+            const time = timeText + labels; // e.g., "8:15AM"
+            const courseName = course?.textContent?.trim() || "";
+
+            return { time, course: courseName, details: detailsText };
+          });
       });
-      // Deduplicate by both time and course
+
+      // Filter results based on time and golfers
+      const results = allResults.filter(({ time, details }) => {
+        // Parse time (format: "8:15AM" or "2:24PM")
+        const timeMatch = time.match(/(\d+):(\d+)\s*([AP])M?/);
+        if (!timeMatch) return false;
+
+        let hour = parseInt(timeMatch[1]);
+        const period = timeMatch[3];
+
+        if (period === 'P' && hour !== 12) hour += 12;
+        if (period === 'A' && hour === 12) hour = 0;
+
+        // Check time range
+        if (hour < config.startTime || hour >= config.endTime) return false;
+
+        // Check golfers - skip if specific count and doesn't match
+        if (config.golfers > 1) {
+          const golfersMatch = details.match(/(\d+)\s*(?:-\s*(\d+))?\s*GOLFERS?/i);
+          if (golfersMatch) {
+            const minGolfers = parseInt(golfersMatch[1]);
+            const maxGolfers = golfersMatch[2] ? parseInt(golfersMatch[2]) : minGolfers;
+
+            // Only include if our golfer count fits in range
+            if (config.golfers < minGolfers || config.golfers > maxGolfers) return false;
+          }
+        }
+
+        return true;
+      });
+
       const uniqueResultsSet = new Set<string>();
       const uniqueResults = results.filter(({ time, course }) => {
         const key = `${time} | ${course}`;
@@ -105,61 +227,52 @@ function getMSTTimestamp() {
         uniqueResultsSet.add(key);
         return true;
       });
+
       const currentResults = uniqueResults.map(
         ({ time, course }) => `${time} | ${course}`
       );
-      // Only send email if there is a new result
+
       const newResults = currentResults.filter(
-        (r) => !config.lastResults.includes(r)
+        (r) => !dayConfig.lastResults.includes(r)
       );
+
       if (results.length === 0) {
         console.log(
-          `[${getMSTTimestamp()}] No tee times found for the specified criteria on ${
-            config.date
-          }.`
+          `[${getMSTTimestamp()}] No tee times found for ${dayConfig.date}`
         );
-        emailBody += `No tee times found for the specified criteria on ${config.date}.\n`;
       } else if (newResults.length > 0) {
-        console.log(`[${getMSTTimestamp()}] New tee times for ${config.date}`);
+        console.log(`[${getMSTTimestamp()}] New tee times for ${dayConfig.date}`);
         newResults.forEach((r) =>
-          console.log(`[${getMSTTimestamp()}] Time: ${r}`)
+          console.log(`[${getMSTTimestamp()}] ${r}`)
         );
         emailBody +=
-          `We have found the following tee times for you on ${config.date}:\n` +
-          newResults.map((r) => `Time: ${r}`).join("\n") +
+          `New tee times for ${dayConfig.date}:\n` +
+          newResults.map((r) => r).join("\n") +
           "\n";
         shouldSendEmail = true;
       } else {
         console.log(
-          `[${getMSTTimestamp()}] No new tee times since last check for ${
-            config.date
-          }.`
+          `[${getMSTTimestamp()}] No new tee times for ${dayConfig.date}`
         );
-        emailBody += `No new tee times since last check for ${config.date}.\n`;
       }
-      // Update lastResults for next iteration only (not saved to file)
-      config.lastResults = currentResults;
+
+      dayConfig.lastResults = currentResults;
     }
 
-    // After checking both days, send email if any new results were found
     if (shouldSendEmail) {
       try {
-        await sgMail.send({
-          from: process.env.SENDGRID_FROM || "brocklchelle@gmail.com",
-          to: "brocklchelle@gmail.com",
+        await resend.emails.send({
+          from: 'Kananaskis Tee Times <onboarding@resend.dev>',
+          to: ["brocklchelle@gmail.com"],
           subject: "Kananaskis Tee Times",
           text: emailBody,
         });
-        console.log(`[${getMSTTimestamp()}] Email sent!`);
+        console.log(`[${getMSTTimestamp()}] Email sent`);
       } catch (err) {
-        console.error(`[${getMSTTimestamp()}] Failed to send email:`, err);
+        console.error(`[${getMSTTimestamp()}] Email failed:`, err);
       }
-    } else {
-      console.log(
-        `[${getMSTTimestamp()}] No new tee times since last check for either day.`
-      );
     }
-    // Wait 30 seconds before next polling cycle
+
     await page.waitForTimeout(30000);
   }
 })();
