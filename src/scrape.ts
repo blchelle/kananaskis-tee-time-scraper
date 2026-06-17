@@ -51,6 +51,47 @@ function getMSTTimestamp() {
   return mst.toISOString().replace("T", " ").substring(0, 19) + " MST";
 }
 
+// Selects a date via the inline calendar widget. The date <input> is readonly and
+// sits behind an overlay (Playwright can't click it), the day number lives in a
+// sibling span (not the button), two calendars exist in the DOM (one hidden), and
+// adjacent-month cells duplicate day numbers. So we drive it through evaluate on the
+// visible calendar: page months by clicking next to the title, then click the day at
+// (firstOne + day - 1) since the first "1" is always the current month's day one.
+async function selectDate(page: any, month: number, day: number, year: number) {
+  const target = new Date(year, month - 1, 1).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+
+  for (let i = 0; i < 24; i++) {
+    const state = await page.evaluate((target: string) => {
+      const cal = [...document.querySelectorAll(".ngx-dates-picker-calendar-container")]
+        .find((c) => (c as HTMLElement).offsetWidth || (c as HTMLElement).offsetHeight);
+      if (!cal) return "nocal";
+      const title = cal.querySelector(".topbar-title") as HTMLElement;
+      if (title.textContent?.trim() === target) return "done";
+      (title.nextElementSibling as HTMLElement).click();
+      return "nav";
+    }, target);
+    if (state === "done") break;
+    if (state === "nocal") throw new Error("calendar not visible");
+    await page.waitForTimeout(300);
+  }
+
+  const clicked = await page.evaluate((day: number) => {
+    const cal = [...document.querySelectorAll(".ngx-dates-picker-calendar-container")]
+      .find((c) => (c as HTMLElement).offsetWidth || (c as HTMLElement).offsetHeight);
+    if (!cal) return null;
+    const units = [...cal.querySelectorAll(".day-unit")] as HTMLElement[];
+    const firstOne = units.findIndex((u) => u.textContent?.trim() === "1");
+    const cell = units[firstOne + day - 1];
+    if (!cell) return null;
+    ((cell.querySelector("button") as HTMLElement) || cell).click();
+    return cell.textContent?.trim();
+  }, day);
+  if (!clicked) throw new Error("day cell not found");
+}
+
 (async () => {
   try {
     const browser = await chromium.launch({
@@ -75,46 +116,6 @@ function getMSTTimestamp() {
     await page.goto(url);
     await page.waitForTimeout(5000);
 
-    // Navigate to first date using calendar
-    const [targetYear, targetMonth, targetDay] = config.dates[0].split('-').map(Number);
-
-    console.log(`[${getMSTTimestamp()}] Navigating to ${targetMonth}/${targetDay}/${targetYear}`);
-
-    // Navigate to correct month
-    let currentMonth = 5; // May (current month from snapshot)
-    let currentYear = 2026;
-
-    while (currentYear < targetYear || (currentYear === targetYear && currentMonth < targetMonth)) {
-      console.log(`[${getMSTTimestamp()}] Calendar at ${currentMonth}/${currentYear}, navigating to ${targetMonth}/${targetYear}`);
-      // Click next month button (it's the 4th button: [0]=disabled prev, [1]=month selector, [2]=Sign In, [3]=next)
-      const buttons = await page.$$('button');
-      if (buttons.length > 3) {
-        await buttons[3].click();
-      }
-      await page.waitForTimeout(1000);
-      currentMonth++;
-      if (currentMonth > 12) {
-        currentMonth = 1;
-        currentYear++;
-      }
-    }
-
-    console.log(`[${getMSTTimestamp()}] Calendar navigation complete, now at ${currentMonth}/${currentYear}`);
-    await page.waitForTimeout(3000);
-
-    // Click day in calendar grid
-    try {
-      await page.click(`text="${targetDay}"`, { timeout: 5000 });
-      console.log(`[${getMSTTimestamp()}] Clicked day ${targetDay}`);
-    } catch (err) {
-      console.log(`[${getMSTTimestamp()}] ERROR: Could not click day ${targetDay}`);
-      await page.screenshot({ path: '/tmp/calendar-error.png', fullPage: true });
-      await browser.close();
-      process.exit(1);
-    }
-
-    await page.waitForTimeout(1000);
-
     // Select golfers
     const golfersButtonText = config.golfers === 1 ? "Any" : config.golfers.toString();
     await page.click(`button:has-text("${golfersButtonText}")`);
@@ -125,7 +126,9 @@ function getMSTTimestamp() {
       const date = new Date(year, month - 1, day);
       return {
         date: date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
-        dateValue: `${month}/${day}/${year % 100}`,
+        month,
+        day,
+        year,
         lastResults: [] as string[],
       };
     });
@@ -135,16 +138,14 @@ function getMSTTimestamp() {
       let shouldSendEmail = false;
 
       for (const dayConfig of daysToQuery) {
-        // Click the specific day in calendar
-        const [month, day, year] = dayConfig.dateValue.split('/').map(Number);
-
         try {
-          await page.click(`text="${day}"`, { timeout: 5000 });
+          await selectDate(page, dayConfig.month, dayConfig.day, dayConfig.year);
         } catch (err) {
-          console.log(`[${getMSTTimestamp()}] WARNING: Could not click day ${day} for ${dayConfig.date}`);
+          console.log(`[${getMSTTimestamp()}] WARNING: Could not select ${dayConfig.date}`);
+          continue;
         }
 
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(4000);
 
         // Parse all results
         const allResults = await page.$$eval("button.btn-teesheet", (buttons) => {
