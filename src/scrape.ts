@@ -95,25 +95,30 @@ async function selectDate(page: any, month: number, day: number, year: number) {
 let consecutiveFailures = 0;
 
 async function runBrowser() {
-  const browser = await chromium.launch({
+  // Persistent profile so a solved cf_clearance cookie survives restarts; real Chrome (not
+  // bundled Chromium) drops a batch of automation fingerprint tells.
+  const context = await chromium.launchPersistentContext(".chrome-profile", {
+    channel: "chrome",
     headless: process.env.NODE_ENV !== 'development',
     args: [
       '--disable-blink-features=AutomationControlled',
       '--disable-dev-shm-usage',
       '--no-sandbox',
-    ]
+    ],
+    proxy: {
+      server: 'http://pr.oxylabs.io:7777',
+      // sticky session pins the exit IP so a solved cf_clearance cookie stays valid
+      username: 'customer-blchelle-cc-CA-sessid-kananaskis-sesstime-30',
+      password: process.env.OXYLABS_PASSWORD!,
+    },
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    locale: 'en-US',
+    timezoneId: 'America/Denver',
   });
 
   try {
-
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'America/Denver',
-    });
-
-    const page = await context.newPage();
+    const page = context.pages()[0] ?? await context.newPage();
 
     const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=${config.startTime}&TeeOffTimeMax=${config.endTime}`;
     await page.goto(url);
@@ -121,7 +126,18 @@ async function runBrowser() {
 
     // Select golfers
     const golfersButtonText = config.golfers === 1 ? "Any" : config.golfers.toString();
-    await page.click(`button:has-text("${golfersButtonText}")`);
+    try {
+      await page.click(`button:has-text("${golfersButtonText}")`);
+    } catch (err) {
+      // ponytail: diagnostic only — capture page state so we can see WHY the button is missing
+      const buttons = await page.$$eval("button", (bs) =>
+        bs.map((b) => b.textContent?.trim()).filter(Boolean)
+      ).catch(() => []);
+      await page.screenshot({ path: "golfers-fail.png", fullPage: true }).catch(() => {});
+      console.error(`[${getMSTTimestamp()}] Golfers click failed. url=${page.url()} title="${await page.title().catch(() => "")}"`);
+      console.error(`[${getMSTTimestamp()}] Buttons on page (${buttons.length}): ${JSON.stringify(buttons)}`);
+      throw err;
+    }
     await page.waitForTimeout(1000);
 
     const daysToQuery = config.dates.map((dateStr) => {
@@ -263,7 +279,7 @@ async function runBrowser() {
       await page.waitForTimeout(30000);
     }
   } finally {
-    await browser.close().catch(() => {});
+    await context.close().catch(() => {});
   }
 }
 
