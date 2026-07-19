@@ -92,16 +92,19 @@ async function selectDate(page: any, month: number, day: number, year: number) {
   if (!clicked) throw new Error("day cell not found");
 }
 
-(async () => {
+let consecutiveFailures = 0;
+
+async function runBrowser() {
+  const browser = await chromium.launch({
+    headless: process.env.NODE_ENV !== 'development',
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+    ]
+  });
+
   try {
-    const browser = await chromium.launch({
-      headless: true, // TODO: change back to process.env.NODE_ENV !== 'development'
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
-      ]
-    });
 
     const context = await browser.newContext({
       viewport: { width: 1920, height: 1080 },
@@ -256,27 +259,46 @@ async function selectDate(page: any, month: number, day: number, year: number) {
         }
       }
 
+      consecutiveFailures = 0;
       await page.waitForTimeout(30000);
     }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
 
-    console.error(`[${getMSTTimestamp()}] CRASH:`, errorMessage);
-    if (errorStack) console.error(errorStack);
-
+// A closed page/browser is a transient blip for a scraper meant to run forever,
+// so relaunch instead of dying. Only email + exit if it keeps failing back-to-back.
+(async () => {
+  while (true) {
     try {
-      await resend.emails.send({
-        from: 'Kananaskis Tee Times <onboarding@resend.dev>',
-        to: ["brocklchelle@gmail.com"],
-        subject: "Kananaskis Scraper Crashed",
-        text: `Script crashed at ${getMSTTimestamp()}\n\nError: ${errorMessage}\n\n${errorStack || 'No stack trace'}`,
-      });
-      console.log(`[${getMSTTimestamp()}] Crash email sent`);
-    } catch (emailErr) {
-      console.error(`[${getMSTTimestamp()}] Failed to send crash email:`, emailErr);
-    }
+      await runBrowser();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
 
-    process.exit(1);
+      consecutiveFailures++;
+      console.error(`[${getMSTTimestamp()}] CRASH (${consecutiveFailures}):`, errorMessage);
+      if (errorStack) console.error(errorStack);
+
+      if (consecutiveFailures < 5) {
+        await new Promise((r) => setTimeout(r, 60000));
+        continue;
+      }
+
+      try {
+        await resend.emails.send({
+          from: 'Kananaskis Tee Times <onboarding@resend.dev>',
+          to: ["brocklchelle@gmail.com"],
+          subject: "Kananaskis Scraper Crashed",
+          text: `Script crashed ${consecutiveFailures}x at ${getMSTTimestamp()}\n\nError: ${errorMessage}\n\n${errorStack || 'No stack trace'}`,
+        });
+        console.log(`[${getMSTTimestamp()}] Crash email sent`);
+      } catch (emailErr) {
+        console.error(`[${getMSTTimestamp()}] Failed to send crash email:`, emailErr);
+      }
+
+      process.exit(1);
+    }
   }
 })();
