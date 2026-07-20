@@ -265,7 +265,7 @@ async function runBrowser() {
         try {
           await resend.emails.send({
             from: 'Kananaskis Tee Times <onboarding@resend.dev>',
-            to: ["brocklchelle@gmail.com"],
+            to: ["brocklchelle@gmail.com", "sth.marzolf@live.com", "ryanalcock99@gmail.com", "dclark@ualberta.ca"],
             subject: "Kananaskis Tee Times",
             text: emailBody,
           });
