@@ -117,9 +117,9 @@ async function runBrowser() {
     timezoneId: 'America/Denver',
   });
 
-  try {
-    const page = context.pages()[0] ?? await context.newPage();
+  const page = context.pages()[0] ?? await context.newPage();
 
+  try {
     const url = `https://kananaskisabresidents.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=${config.startTime}&TeeOffTimeMax=${config.endTime}`;
     await page.goto(url);
     await page.waitForTimeout(5000);
@@ -278,6 +278,11 @@ async function runBrowser() {
       consecutiveFailures = 0;
       await page.waitForTimeout(30000);
     }
+  } catch (error) {
+    // Screenshot before the finally closes the context, so the crash email can show the page.
+    const screenshot = await page.screenshot({ fullPage: true }).catch(() => undefined);
+    if (screenshot && error instanceof Error) (error as any).screenshot = screenshot;
+    throw error;
   } finally {
     await context.close().catch(() => {});
   }
@@ -302,12 +307,15 @@ async function runBrowser() {
         continue;
       }
 
+      const screenshot = error instanceof Error ? (error as any).screenshot as Buffer | undefined : undefined;
+
       try {
         await resend.emails.send({
           from: 'Kananaskis Tee Times <onboarding@resend.dev>',
           to: ["brocklchelle@gmail.com"],
           subject: "Kananaskis Scraper Crashed",
           text: `Script crashed ${consecutiveFailures}x at ${getMSTTimestamp()}\n\nError: ${errorMessage}\n\n${errorStack || 'No stack trace'}`,
+          attachments: screenshot ? [{ filename: "crash.png", content: screenshot }] : undefined,
         });
         console.log(`[${getMSTTimestamp()}] Crash email sent`);
       } catch (emailErr) {
